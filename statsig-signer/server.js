@@ -18,6 +18,7 @@ const fs = require("fs");
 const path = require("path");
 const { chromium } = require("playwright");
 const initSqlJs = require("sql.js");
+const { patchChunk } = require("./injector");
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
 const SSO_TOKEN = (process.env.GROK_SSO_TOKEN || "").trim();
@@ -29,14 +30,6 @@ const SIGN_CACHE_MAX = parseInt(process.env.SIGN_CACHE_MAX || "512", 10);
 const READY_TIMEOUT_MS = parseInt(process.env.READY_TIMEOUT_MS || "90000", 10);
 const EVAL_TIMEOUT_MS = parseInt(process.env.EVAL_TIMEOUT_MS || "10000", 10);
 const TEST_PATH = "/rest/app-chat/conversations/new";
-
-// Robust chunk injection: match `.A(<n>).then(<x>=><y>(<x>.default()))` and
-// expose the resolved signer instance grok itself uses to window.__grokSigner.
-// `[$\w]` so minifier identifiers like `$` / `_$a` are matched too.
-const INJECT_RE = /\.A\((\d+)\)\.then\(([$\w]+)=>([$\w]+)\(\2\.default\(\)\)\)/;
-const INJECT_TO =
-  ".A($1).then($2=>{let __s=$2.default();" +
-  "try{window.__grokSigner=__s}catch(e){};return $3(__s)})";
 
 let browser = null;
 let context = null;
@@ -149,9 +142,10 @@ async function launch(token) {
     try {
       const resp = await route.fetch();
       const body = await resp.text();
-      if (INJECT_RE.test(body)) {
+      const patchedBody = patchChunk(body);
+      if (patchedBody !== body) {
         log("signer chunk patched:", new URL(route.request().url()).pathname);
-        await route.fulfill({ response: resp, body: body.replace(INJECT_RE, INJECT_TO) });
+        await route.fulfill({ response: resp, body: patchedBody });
         return;
       }
       await route.fulfill({ response: resp, body });
